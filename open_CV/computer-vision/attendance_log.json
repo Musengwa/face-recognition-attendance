@@ -1,0 +1,22 @@
+{
+  "unknown#1": {
+    "first_seen": "2026-10-01T08:03:01",
+    "last_seen": "2026-10-01T09:10:10",
+    "count": 8
+  },
+  "person2": {
+    "first_seen": "2026-10-01T08:06:16",
+    "last_seen": "2026-10-01T08:06:16",
+    "count": 1
+  },
+  "person1": {
+    "first_seen": "2026-10-01T08:06:16",
+    "last_seen": "2026-10-01T08:06:16",
+    "count": 1
+  },
+  "person3": {
+    "first_seen": "2026-10-01T08:06:46",
+    "last_seen": "2026-10-01T08:06:46",
+    "count": 1
+  }
+}
