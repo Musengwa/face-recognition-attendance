@@ -61,7 +61,7 @@ known_people = load_known_people(KNOWN_DIR)
 logger = FaceLogger()
 print(f"Loaded {len(known_people)} people: {', '.join(known_people)}")
 
-cap = cv.VideoCapture(0)
+cap = cv.VideoCapture(os.getenv("IP_WEBCAM"))  # ip webcam or 0 for native webcam
 if not cap.isOpened():
     raise SystemExit("Could not open webcam")
 
