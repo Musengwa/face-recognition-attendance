@@ -2,13 +2,13 @@ import os
 import re
 import time
 from datetime import datetime
+from dotenv import load_dotenv
 
 import cv2 as cv
 
 from face_logger import FaceLogger
 
-KNOWN_DIR = 'tests/images'
-COSINE_THRESHOLD = 0.363
+load_dotenv()
 
 # Initialize detector and recognizer
 detector = cv.FaceDetectorYN.create(
@@ -61,7 +61,7 @@ known_people = load_known_people(KNOWN_DIR)
 logger = FaceLogger()
 print(f"Loaded {len(known_people)} people: {', '.join(known_people)}")
 
-cap = cv.VideoCapture("http://10.249.249.176:8080/video")  # ip webcam or 0 for native webcam
+cap = cv.VideoCapture(getenv("WEBCAM") or getenv("IP_WEBCAM"))  # ip webcam or 0 for native webcam
 if not cap.isOpened():
     raise SystemExit("Could not open webcam")
 
