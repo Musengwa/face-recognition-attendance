@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install flake8
+      - run: flake8
+
+  embedding-service:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: embedding_service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: embedding_service/requirements*.txt
+      - uses: actions/cache@v4
+        with:
+          path: embedding_service/models
+          key: onnx-${{ hashFiles('embedding_service/get_models.py') }}
+      - run: pip install -r requirements-dev.txt
+      - run: python get_models.py
+      - run: pytest -q
+
+  matcher-service:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: matcher_service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: matcher_service/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q

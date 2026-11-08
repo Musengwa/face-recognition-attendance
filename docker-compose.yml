@@ -1,0 +1,28 @@
+# Two independent services. On their own machines run just one of them:
+#   docker compose up -d embedding      (GPU/CPU box that runs the models)
+#   docker compose up -d matcher        (box next to the camera)
+# Each reads its own .env file (copy from <service>/.env.example).
+services:
+  embedding:
+    build: ./embedding_service
+    env_file: ./embedding_service/.env
+    environment:
+      MODEL_DIR: /models
+    ports:
+      - "${EMBED_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  matcher:
+    build: ./matcher_service
+    env_file: ./matcher_service/.env
+    ports:
+      - "${STATUS_PORT:-8090}:8090"
+    volumes:
+      - matcher-data:/data
+    # For a USB webcam on Linux, uncomment and set CAMERA_SOURCE=0:
+    # devices:
+    #   - /dev/video0:/dev/video0
+    restart: unless-stopped
+
+volumes:
+  matcher-data:

@@ -1,2 +1,23 @@
+# secrets
 .env
+*.env
+!.env.example
+
+# model binaries: download with embedding_service/get_models.py
+*.onnx
+models/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# runtime state (matcher outbox, fake Django state)
+*.sqlite3
+*.sqlite3-*
+fake_django_state.json
+
+# legacy prototype runtime output
 unknown_faces/
