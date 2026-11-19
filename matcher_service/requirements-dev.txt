@@ -3,3 +3,4 @@ pytest>=8
 respx>=0.21
 fastapi>=0.115,<1
 flake8>=7
+eth-tester[py-evm]>=0.12.0b1,<0.15     # in-memory EVM for tests/test_chain.py

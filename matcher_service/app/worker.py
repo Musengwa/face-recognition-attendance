@@ -1,4 +1,4 @@
-"""The recognition loop: frame -> embedding service -> match -> vote -> cooldown -> outbox."""
+"""The recognition loop: frame -> embedding service -> match -> vote -> cooldown -> outbox (-> chain or Django)."""
 import logging
 import threading
 import time
@@ -21,7 +21,8 @@ class Stats:
         self.counters = {k: 0 for k in (
             "frames", "embed_errors", "faces", "faces_low_quality", "votes_member", "votes_imposter",
             "votes_ambiguous", "reported_member", "reported_imposter", "suppressed_cooldown",
-            "skipped_no_gallery", "skipped_model_mismatch", "delivered", "recorded")}
+            "skipped_no_gallery", "skipped_model_mismatch", "not_written_imposter", "not_written_banned",
+            "delivered", "recorded")}
         self.state = {"embed_ok": None, "model_mismatch": None, "last_frame_at": None}
 
     def inc(self, key, n=1):
@@ -106,6 +107,8 @@ class Worker:
         return events
 
     def _report(self, win, captured_at, now):
+        if self.s.attendance_sink == "chain" and not self._chain_writable(win.label, now):
+            return None
         if win.label == IMPOSTER:
             key, seconds, member_id = ("imposter", self.s.camera_id), self.s.imposter_cooldown_seconds, None
         else:
@@ -126,6 +129,21 @@ class Worker:
         self.stats.inc("reported_imposter" if member_id is None else "reported_member")
         log.info("queued %s (confidence %.3f) at %s", member_id or "IMPOSTER", event["confidence"], event["captured_at"])
         return event
+
+    def _chain_writable(self, label, now):
+        """The contract only stores attendance: imposters and banned members are logged, never written."""
+        if label == IMPOSTER:
+            if self.cooldowns.allow(("imposter", self.s.camera_id), self.s.imposter_cooldown_seconds, now):
+                self.stats.inc("not_written_imposter")
+                log.warning("IMPOSTER at camera %s (not written to the chain)", self.s.camera_id)
+            return False
+        g = self.galleries.current
+        if g is not None and label in g.full.banned:
+            if self.cooldowns.allow(("member", label), self.s.member_cooldown_seconds, now):
+                self.stats.inc("not_written_banned")
+                log.warning("banned member %s seen at camera %s (not written to the chain)", label, self.s.camera_id)
+            return False
+        return True
 
     # ---------- loop ----------
     def run(self, camera, stop):
@@ -150,14 +168,12 @@ class Worker:
 
 
 def on_delivered(stats):
-    """Build the outbox callback: count deliveries and fire the blockchain hook for `recorded`."""
-    def callback(payload, resp):
+    """Build the outbox callback: count deliveries and fire the hook for `recorded` results."""
+    def callback(payload, result):
         stats.inc("delivered")
-        try:
-            body = resp.json()
-        except ValueError:
-            body = {}
-        if isinstance(body, dict) and body.get("status") == "recorded":
+        if isinstance(result, dict) and result.get("status") == "recorded":
             stats.inc("recorded")
-            hooks.on_recorded({"event": payload, "response": body})
+            if result.get("tx_hash"):
+                log.info("on chain: %s tx=%s block=%s", payload.get("member_id"), result["tx_hash"], result.get("block_number"))
+            hooks.on_recorded({"event": payload, "response": result})
     return callback

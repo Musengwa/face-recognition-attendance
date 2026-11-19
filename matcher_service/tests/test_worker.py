@@ -63,6 +63,15 @@ def test_registered_unregistered_and_banned(settings):
     assert 0.0 <= got[None]["confidence"] < settings.match_threshold
 
 
+def test_chain_sink_queues_only_members_allowed_to_attend(settings):
+    w, clock, outbox = make_worker(with_(settings, attendance_sink="chain"))
+    frames(w, clock, [face(toward(A, unit(9), 0.7), box=(0, 0, 100, 100)),
+                      face(unit(50), box=(300, 0, 100, 100)),
+                      face(toward(BANNED, unit(9), 0.8), box=(600, 0, 100, 100))], 3)
+    assert [e["member_id"] for e in outbox.events] == ["A"]
+    assert w.stats.counters["not_written_imposter"] == 1 and w.stats.counters["not_written_banned"] == 1
+
+
 def test_member_outside_session_is_reported_by_id(settings):
     w, clock, outbox = make_worker(settings)
     frames(w, clock, [face(toward(B, unit(9), 0.7))], 3)

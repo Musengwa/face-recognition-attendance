@@ -1,14 +1,12 @@
 """Extension hooks.
 
-=====================================================================
- BLOCKCHAIN HOOK — intentionally NOT wired to any chain yet.
-=====================================================================
-`on_recorded(record)` is called once, from the outbox delivery thread, after Django answered
-`{"status": "recorded"}` for an attendance event. This is where a future `markAttendance`
-(e.g. an `attendance_chain.py` web3 call) would go once the write order (Django first vs chain
-first, and how tx_hash/block_number flow back to Django) has been decided.
+`on_recorded(record)` is called once, from the outbox delivery thread, after an attendance event was
+recorded by the sink:
+  * chain sink (default): record = {"event": <payload>, "response": {"status": "recorded", "tx_hash", "block_number"}}
+  * django sink:          record = {"event": <payload>, "response": <Django's JSON body>}
 
-Keep it fast and never raise: exceptions are caught and logged, and the event is NOT re-sent.
+Use it for side effects such as telling the dashboard about the tx hash. Keep it fast and never raise:
+exceptions are caught and logged, and the event is NOT re-sent.
 """
 import logging
 
@@ -16,5 +14,4 @@ log = logging.getLogger("matcher.hooks")
 
 
 def on_recorded(record):
-    """record = {"event": <payload sent to Django>, "response": <Django's JSON body>}."""
     log.debug("on_recorded hook: event %s (no-op)", record["event"].get("event_id"))

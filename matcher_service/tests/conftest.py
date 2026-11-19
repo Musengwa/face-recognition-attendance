@@ -44,7 +44,8 @@ def captured(seconds=0):
 @pytest.fixture
 def settings(tmp_path):
     return Settings(camera_source="0", camera_id="door-1", embed_url="http://embed.test", embed_token="et",
-                    django_url="http://django.test", django_token="dt", outbox_path=str(tmp_path / "outbox.sqlite3"))
+                    django_url="http://django.test", django_token="dt", attendance_sink="django",
+                    outbox_path=str(tmp_path / "outbox.sqlite3"))
 
 
 def with_(settings, **kw):

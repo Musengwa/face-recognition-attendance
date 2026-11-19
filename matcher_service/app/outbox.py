@@ -1,7 +1,8 @@
-"""Durable outbox: attendance events go to SQLite first, a background thread delivers them to Django.
+"""Durable outbox: attendance events go to SQLite first, a background thread delivers them to the sink.
 
-The camera loop only does a fast local INSERT, so a slow or dead Django never blocks it.
-Events are delivered in order with exponential backoff and keep their original captured_at.
+The sink is the Ethereum contract (default) or the Django dashboard, see sinks.py. The camera loop only
+does a fast local INSERT, so a slow or dead node/dashboard never blocks it. Events are delivered in order
+with exponential backoff and keep their original captured_at.
 """
 import json
 import logging
@@ -9,17 +10,15 @@ import sqlite3
 import threading
 import time
 
-import httpx
+from .sinks import DeliveryRejected, DeliveryRetry
 
 log = logging.getLogger("matcher.outbox")
-
-RETRYABLE_4XX = {401, 403, 404, 408, 409, 425, 429}
 
 
 class Outbox:
     def __init__(self, path, send, on_delivered=None, max_backoff=60.0, clock=time.monotonic):
-        """send(payload) -> httpx.Response (may raise httpx.HTTPError).
-        on_delivered(payload, response) is called once per event after a 2xx answer."""
+        """send(payload, progress, checkpoint) -> result dict; raises DeliveryRetry / DeliveryRejected (sinks.py).
+        on_delivered(payload, result) is called once per delivered event."""
         self._send = send
         self._on_delivered = on_delivered
         self._clock = clock
@@ -40,6 +39,9 @@ class Outbox:
             " last_error TEXT,"
             " created_at REAL NOT NULL)"
         )
+        columns = {row[1] for row in self._db.execute("PRAGMA table_info(events)")}
+        if "progress" not in columns:       # outboxes created before the chain sink
+            self._db.execute("ALTER TABLE events ADD COLUMN progress TEXT")
         self._wake = threading.Event()
 
     def put(self, payload):
@@ -66,31 +68,33 @@ class Outbox:
         delivered = 0
         while True:
             with self._lock:
-                row = self._db.execute("SELECT id, payload FROM events WHERE state='pending' ORDER BY id LIMIT 1").fetchone()
+                row = self._db.execute(
+                    "SELECT id, payload, progress FROM events WHERE state='pending' ORDER BY id LIMIT 1").fetchone()
             if row is None:
                 return delivered
-            event_id, payload = row[0], json.loads(row[1])
+            event_id, payload, progress = row[0], json.loads(row[1]), row[2]
             try:
-                resp = self._send(payload)
-                status = resp.status_code
-            except httpx.HTTPError as exc:
-                self._fail(event_id, f"{type(exc).__name__}: {exc}")
+                result = self._send(payload, progress, lambda value, eid=event_id: self._checkpoint(eid, value))
+            except DeliveryRetry as exc:
+                self._fail(event_id, str(exc))
                 return delivered
-            if 200 <= status < 300:
-                with self._lock:
-                    self._db.execute("DELETE FROM events WHERE id=?", (event_id,))
-                self.backoff, self.last_error = 0.0, None
-                delivered += 1
-                self._notify(payload, resp)
-            elif status >= 500 or status in RETRYABLE_4XX:
-                self._fail(event_id, f"HTTP {status}")
-                return delivered
-            else:
-                # The payload itself was rejected: retrying will not help. Keep it for inspection.
+            except DeliveryRejected as exc:
+                # The event itself was rejected: retrying will not help. Keep it for inspection.
                 with self._lock:
                     self._db.execute("UPDATE events SET state='dead', attempts=attempts+1, last_error=? WHERE id=?",
-                                     (f"HTTP {status}: {resp.text[:200]}", event_id))
-                log.error("Django rejected event %s with HTTP %s; kept as dead in outbox", payload.get("event_id"), status)
+                                     (str(exc)[:300], event_id))
+                log.error("event %s rejected (%s); kept as dead in outbox", payload.get("event_id"), exc)
+                continue
+            with self._lock:
+                self._db.execute("DELETE FROM events WHERE id=?", (event_id,))
+            self.backoff, self.last_error = 0.0, None
+            delivered += 1
+            self._notify(payload, result)
+
+    def _checkpoint(self, event_id, value):
+        """Persist sink progress (the chain tx hash) before waiting for the outcome."""
+        with self._lock:
+            self._db.execute("UPDATE events SET progress=? WHERE id=?", (value, event_id))
 
     def _fail(self, event_id, error):
         with self._lock:
@@ -98,14 +102,14 @@ class Outbox:
         self.backoff = min(self.max_backoff, max(1.0, self.backoff * 2))
         self.next_attempt = self._clock() + self.backoff
         if error != self.last_error:
-            log.warning("delivery to Django failed (%s); retrying in %.0fs", error, self.backoff)
+            log.warning("delivery failed (%s); retrying in %.0fs", error, self.backoff)
         self.last_error = error
 
-    def _notify(self, payload, resp):
+    def _notify(self, payload, result):
         if self._on_delivered is None:
             return
         try:
-            self._on_delivered(payload, resp)
+            self._on_delivered(payload, result)
         except Exception:
             log.exception("on_delivered hook failed for event %s", payload.get("event_id"))
 
