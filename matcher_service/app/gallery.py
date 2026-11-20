@@ -29,6 +29,7 @@ class GalleryManager:
         self._current = None
         self.last_error = None
         self.last_ok = None
+        self.last_ok_at = None        # wall clock, for the status page
 
     @property
     def current(self):
@@ -48,7 +49,7 @@ class GalleryManager:
             stale = cur is None or self._clock() - cur.loaded_at >= self.refresh_seconds
             changed = cur is not None and (version != cur.version or session_ids != cur.session_ids)
             if not (force or stale or changed):
-                self.last_ok, self.last_error = self._clock(), None
+                self.last_ok, self.last_ok_at, self.last_error = self._clock(), time.time(), None
                 return False
 
             full = Gallery.from_payload(self.django.embeddings_all())
@@ -59,7 +60,7 @@ class GalleryManager:
             if session.model != full.model:
                 raise GalleryError(f"session gallery model {session.model!r} != full gallery model {full.model!r}")
             self._current = Galleries(session, full, session_ids, version or full.version, self._clock())
-            self.last_ok, self.last_error = self._clock(), None
+            self.last_ok, self.last_ok_at, self.last_error = self._clock(), time.time(), None
             log.info("gallery loaded: version=%s sessions=%s session_members=%d all_members=%d",
                      self._current.version, ",".join(session_ids) or "-", len(session), len(full))
             return True

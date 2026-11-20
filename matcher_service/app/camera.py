@@ -17,7 +17,14 @@ log = logging.getLogger("matcher.camera")
 
 def parse_source(source):
     source = str(source).strip()
-    return int(source) if source.isdigit() else source
+    if source.isdigit():
+        return int(source)
+    scheme, _, rest = source.partition("://")
+    if scheme.lower() in ("http", "https") and "/" not in rest.rstrip("/"):
+        # A bare http://host:port is the IP Webcam (Android) web page, not a video stream; its MJPEG is at /video.
+        log.info("camera source %s://%s has no path; appending /video", scheme, rest.split("@")[-1].rstrip("/"))
+        return source.rstrip("/") + "/video"
+    return source
 
 
 class Camera:

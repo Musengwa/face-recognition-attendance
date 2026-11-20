@@ -77,8 +77,7 @@ class ChainSink:
         owner = self.contract.functions.owner().call()
         info = {"chain_id": self.w3.eth.chain_id, "contract": self.contract.address, "sender": self.sender,
                 "owner": owner, "records": self.contract.functions.getRecordCount().call()}
-        if owner.lower() != self.sender.lower():
-            log.error("sender %s is not the contract owner %s: every markAttendance will revert", self.sender, owner)
+        info["owner_ok"] = owner.lower() == self.sender.lower()
         return info
 
     def deliver(self, payload, progress=None, checkpoint=None):

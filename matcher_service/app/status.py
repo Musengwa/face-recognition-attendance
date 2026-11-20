@@ -1,17 +1,51 @@
-"""Tiny read-only HTTP endpoint: GET /status -> health and counters (no identities, no embeddings)."""
+"""Tiny read-only HTTP endpoint (no identities, no embeddings, no camera images):
+
+    GET /         -> dashboard page (polls /status)
+    GET /status   -> health, connections and counters as JSON (also /health)
+"""
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+DASHBOARD = Path(__file__).with_name("dashboard.html")
+STARTED_AT = time.time()
 
 
-def build_status(settings, camera, galleries, outbox, stats):
+def _connections(settings, galleries, snap, health):
+    probes = health.snapshot() if health is not None else {}
+    embed = probes.get("embedder") or {"ok": snap["embed_ok"], "error": None, "detail": {}}
+    if snap["model_mismatch"]:
+        embed = {**embed, "ok": False, "error": "embedding model differs from the gallery model"}
+    django = {
+        "ok": None if galleries.last_error is None and getattr(galleries, "last_ok_at", None) is None
+        else galleries.last_error is None,
+        "error": galleries.last_error,
+        "last_ok_at": getattr(galleries, "last_ok_at", None),
+        "detail": {"url": settings.django_url},
+    }
+    embed["detail"] = {"url": settings.embed_url, **(embed.get("detail") or {})}
+    out = {"embedder": embed, "django": django}
+    if settings.attendance_sink == "chain":
+        chain = probes.get("chain") or {"ok": None, "error": None, "detail": {}}
+        chain["detail"] = {"rpc_url": settings.chain_rpc_url, **(chain.get("detail") or {})}
+        out["chain"] = chain
+    return out
+
+
+def build_status(settings, camera, galleries, outbox, stats, health=None):
     g = galleries.current
     snap = stats.snapshot()
-    healthy = bool(camera.connected and snap["embed_ok"] and g is not None and not snap["model_mismatch"]
-                   and not galleries.last_error and not outbox.last_error)
+    connections = _connections(settings, galleries, snap, health)
+    healthy = bool(camera.connected and g is not None and not outbox.last_error
+                   and all(c["ok"] is not False for c in connections.values())
+                   and snap["embed_ok"] is not False)
     return {
         "status": "ok" if healthy else "degraded",
+        "uptime_seconds": round(time.time() - STARTED_AT),
         "camera": {"id": settings.camera_id, "connected": camera.connected, "error": camera.last_error},
+        "connections": connections,
         "embedding_service": {"ok": snap["embed_ok"], "model_mismatch": snap["model_mismatch"]},
         "gallery": None if g is None else {
             "model": g.full.model, "version": g.version, "active_sessions": list(g.session_ids),
@@ -29,13 +63,19 @@ def build_status(settings, camera, galleries, outbox, stats):
 def serve_status(host, port, get_status):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.split("?")[0] not in ("/status", "/health"):
+            path = self.path.split("?")[0]
+            if path in ("/status", "/health"):
+                self._send(json.dumps(get_status(), default=str).encode(), "application/json")
+            elif path in ("/", "/index.html"):
+                self._send(DASHBOARD.read_bytes(), "text/html; charset=utf-8")
+            else:
                 self.send_error(404)
-                return
-            body = json.dumps(get_status()).encode()
+
+        def _send(self, body, content_type):
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 

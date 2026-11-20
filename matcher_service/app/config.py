@@ -3,6 +3,25 @@ import os
 from dataclasses import dataclass
 
 
+def load_dotenv(path=".env"):
+    """Load KEY=VALUE lines from `path` into os.environ without overriding variables already set."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        return
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _req(name):
     value = os.environ.get(name, "").strip()
     if not value:

@@ -43,3 +43,38 @@ def test_status_endpoint_exposes_no_identities(settings):
     data = json.loads(body)
     assert data["status"] == "ok"
     assert b'"A"' not in body and b"embedding" not in body.replace(b"embedding_service", b"")
+
+
+def test_dashboard_page_is_served(settings):
+    camera, galleries, outbox, stats = parts()
+    server = serve_status("127.0.0.1", 0, lambda: build_status(settings, camera, galleries, outbox, stats))
+    try:
+        resp = urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/", timeout=5)
+        body = resp.read()
+    finally:
+        server.shutdown()
+    assert resp.headers["Content-Type"].startswith("text/html") and b"/status" in body
+
+
+def test_connections_report_failed_probes(settings):
+    from dataclasses import replace
+
+    from app.health import HealthMonitor, Probe
+
+    def down():
+        raise ConnectionError("node offline")
+
+    health = HealthMonitor([Probe("embedder", lambda: {"model": "m"}), Probe("chain", down)])
+    for p in health.probes.values():
+        p.run_once()
+    s = build_status(replace(settings, attendance_sink="chain"), *parts(), health)
+    assert s["connections"]["embedder"]["ok"] is True and s["connections"]["embedder"]["detail"]["model"] == "m"
+    assert s["connections"]["chain"]["ok"] is False and "node offline" in s["connections"]["chain"]["error"]
+    assert s["status"] == "degraded"
+
+
+def test_bare_http_camera_url_gets_video_path():
+    from app.camera import parse_source
+    assert parse_source("http://10.0.0.5:8080") == "http://10.0.0.5:8080/video"
+    assert parse_source("http://10.0.0.5:8080/shot.mjpg") == "http://10.0.0.5:8080/shot.mjpg"
+    assert parse_source("1") == 1
