@@ -5,8 +5,9 @@ import threading
 
 from .camera import Camera
 from .clients import DjangoClient, EmbedClient
-from .config import Settings
+from .config import Settings, load_dotenv
 from .gallery import GalleryManager, start_thread
+from .health import HealthMonitor, chain_probe, embed_probe
 from .outbox import Outbox
 from .sinks import DjangoSink
 from .status import build_status, serve_status
@@ -24,7 +25,11 @@ def make_sink(s, django):
                      private_key=s.chain_private_key or None, sender=s.chain_from or None,
                      receipt_timeout=s.chain_receipt_timeout)
     try:
-        log.info("chain: %s", sink.check())
+        info = sink.check()
+        log.info("chain: %s", info)
+        if not info["owner_ok"]:
+            log.error("sender %s is not the contract owner %s: every markAttendance will revert",
+                      info["sender"], info["owner"])
     except Exception as exc:       # not fatal: events wait in the outbox until the node is reachable
         log.warning("blockchain node not usable yet (%s: %s); events will queue in the outbox", type(exc).__name__, exc)
     return sink
@@ -33,6 +38,7 @@ def make_sink(s, django):
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)      # one line per frame otherwise
+    load_dotenv()       # .env in the working directory; real environment variables win
     s = Settings.from_env()
     stop = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -46,6 +52,8 @@ def main():
     galleries = GalleryManager(django, s.gallery_refresh_seconds, s.session_poll_seconds)
     camera = Camera(s.camera_source)
     worker = Worker(s, embed, galleries, outbox, stats)
+    probes = [embed_probe(embed)] + ([chain_probe(sink)] if s.attendance_sink == "chain" else [])
+    health = HealthMonitor(probes)
 
     try:
         info = embed.health()
@@ -56,8 +64,9 @@ def main():
     start_thread(galleries.run, stop, name="gallery")
     outbox_thread = start_thread(outbox.run, stop, name="outbox")
     start_thread(camera.run, stop, name="camera")
-    server = serve_status(s.status_host, s.status_port, lambda: build_status(s, camera, galleries, outbox, stats))
-    log.info("matcher running: camera=%s fps=%s attendance -> %s; status on :%d",
+    start_thread(health.run, stop, name="health")
+    server = serve_status(s.status_host, s.status_port, lambda: build_status(s, camera, galleries, outbox, stats, health))
+    log.info("matcher running: camera=%s fps=%s attendance -> %s; dashboard on http://localhost:%d/",
              s.camera_id, s.fps, sink.name, s.status_port)
 
     try:

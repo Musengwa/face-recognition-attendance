@@ -93,7 +93,7 @@ pip install -r requirements.txt
 cp .env.example .env              # set CAMERA_SOURCE, EMBED_URL/TOKEN, DJANGO_URL/TOKEN, CHAIN_* (section 3)
 export $(grep -v '^#' .env | xargs)
 python -m app
-curl localhost:8090/status
+curl localhost:8090/status        # or open http://localhost:8090/ in a browser
 ```
 
 Or `docker compose up -d --build matcher` (the outbox lives in the `matcher-data` volume; for a USB camera on Linux pass the device, see `docker-compose.yml`).
@@ -121,7 +121,7 @@ Or `docker compose up -d --build matcher` (the outbox lives in the `matcher-data
 | `IMPOSTER_COOLDOWN_SECONDS` | `20` | At most one imposter event per this time, per camera. |
 | `FRAME_WIDTH` | `640` | Frames are downscaled to this width before being sent. |
 | `OUTBOX_PATH` | `matcher_outbox.sqlite3` | Local queue for events not yet written to the chain (or acknowledged by Django). |
-| `STATUS_HOST`, `STATUS_PORT` | `0.0.0.0`, `8090` | `GET /status`: camera/embedding/gallery health, delivery errors, outbox depth and counters (no identities). |
+| `STATUS_HOST`, `STATUS_PORT` | `0.0.0.0`, `8090` | `GET /`: live dashboard (embedder / Django / blockchain connectivity, camera, gallery, outbox, counters). `GET /status`: the same as JSON (no identities, no images). |
 | `HTTP_TIMEOUT` | `10` | Seconds, for the HTTP clients and each JSON-RPC request. |
 
 How it decides (details in [API_CONTRACT.md §2.4](API_CONTRACT.md)):

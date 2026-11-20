@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Matcher Status</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --text: #1b1f24; --muted: #667085; --line: #e4e7ec;
+    --ok: #12805c; --ok-bg: #e7f6ef; --bad: #c4320a; --bad-bg: #fdeee8; --wait: #8a6100; --wait-bg: #fdf5df;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101214; --card: #191c20; --text: #e6e8eb; --muted: #98a2b3; --line: #2a2f36;
+      --ok: #4cc38a; --ok-bg: #12301f; --bad: #ff8a65; --bad-bg: #3a1b12; --wait: #f0c35a; --wait-bg: #33290f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 20px; }
+  h1 { font-size: 20px; margin: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 28px 0 10px; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+  .card h3 { margin: 0 0 8px; font-size: 15px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .pill { font-size: 12px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+  .ok { color: var(--ok); background: var(--ok-bg); }
+  .bad { color: var(--bad); background: var(--bad-bg); }
+  .wait { color: var(--wait); background: var(--wait-bg); }
+  dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 13px; }
+  dt { color: var(--muted); }
+  dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .err { margin-top: 8px; font-size: 12px; color: var(--bad); overflow-wrap: anywhere; }
+  .stats { display: grid; gap: 8px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 12px; color: var(--muted); }
+  #banner { display: none; margin-bottom: 16px; padding: 10px 14px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Matcher</h1>
+    <span id="overall" class="pill wait">loading…</span>
+    <span class="muted" id="meta"></span>
+  </header>
+  <div id="banner" class="bad"></div>
+
+  <h2>Connections</h2>
+  <div class="grid" id="connections"></div>
+
+  <h2>Pipeline</h2>
+  <div class="grid" id="pipeline"></div>
+
+  <h2>Counters</h2>
+  <div class="stats" id="counters"></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+function ago(epoch) {
+  if (!epoch) return "never";
+  const s = Math.max(0, Math.round(Date.now() / 1000 - epoch));
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s / 60) + "m ago";
+  return Math.floor(s / 3600) + "h ago";
+}
+function duration(s) {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`;
+}
+function pill(ok, labels = ["connected", "down", "checking"]) {
+  const [cls, text] = ok === true ? ["ok", labels[0]] : ok === false ? ["bad", labels[1]] : ["wait", labels[2]];
+  return `<span class="pill ${cls}">${text}</span>`;
+}
+function card(title, ok, rows, error, labels) {
+  const dl = rows.filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("");
+  return `<div class="card"><h3>${esc(title)} ${pill(ok, labels)}</h3><dl>${dl}</dl>` +
+         (error ? `<div class="err">${esc(error)}</div>` : "") + `</div>`;
+}
+
+function render(s) {
+  $("banner").style.display = "none";
+  const ok = s.status === "ok";
+  $("overall").className = "pill " + (ok ? "ok" : "bad");
+  $("overall").textContent = ok ? "healthy" : "degraded";
+  $("meta").textContent = `camera ${s.camera.id} · attendance → ${s.delivery.sink} · up ${duration(s.uptime_seconds)}`;
+
+  const c = s.connections, out = [];
+  const e = c.embedder;
+  out.push(card("Embedding service", e.ok, [
+    ["url", e.detail.url], ["model", e.detail.model], ["latency", e.latency_ms != null ? e.latency_ms + " ms" : undefined],
+    ["last ok", e.last_ok_at !== undefined ? ago(e.last_ok_at) : undefined]], e.error));
+  const d = c.django;
+  out.push(card("Django dashboard", d.ok, [["url", d.detail.url], ["last ok", ago(d.last_ok_at)]], d.error));
+  if (c.chain) {
+    const b = c.chain;
+    out.push(card("Blockchain", b.ok, [
+      ["rpc", b.detail.rpc_url], ["chain id", b.detail.chain_id], ["contract", b.detail.contract],
+      ["sender", b.detail.sender], ["records", b.detail.records],
+      ["latency", b.latency_ms != null ? b.latency_ms + " ms" : undefined], ["last ok", ago(b.last_ok_at)]], b.error));
+  }
+  $("connections").innerHTML = out.join("");
+
+  const g = s.gallery, o = s.outbox;
+  $("pipeline").innerHTML = [
+    card("Camera", s.camera.connected, [["id", s.camera.id], ["last frame", s.last_frame_at || "none yet"]],
+         s.camera.error, ["streaming", "no video", "starting"]),
+    card("Gallery", g ? true : (d.ok === false ? false : null), g ? [
+      ["model", g.model], ["version", g.version], ["active sessions", g.active_sessions.join(", ") || "none"],
+      ["session members", g.session_members], ["all members", g.all_members]] : [["state", "not loaded yet"]],
+      null, ["loaded", "not loaded", "loading"]),
+    card("Delivery outbox", s.delivery.error ? false : true, [
+      ["sink", s.delivery.sink], ["pending", o.pending], ["dead", o.dead],
+      ["retry in", s.delivery.retry_backoff_seconds ? s.delivery.retry_backoff_seconds + "s" : undefined]],
+      s.delivery.error, ["delivering", "retrying", "idle"]),
+  ].join("");
+
+  $("counters").innerHTML = Object.entries(s.counters)
+    .map(([k, v]) => `<div class="stat"><b>${esc(v)}</b><span>${esc(k.replace(/_/g, " "))}</span></div>`).join("");
+}
+
+async function tick() {
+  try {
+    const r = await fetch("/status", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    render(await r.json());
+  } catch (err) {
+    $("overall").className = "pill bad";
+    $("overall").textContent = "offline";
+    $("banner").style.display = "block";
+    $("banner").textContent = "Cannot reach the matcher status endpoint (" + err.message + "). Is the matcher running?";
+  }
+}
+tick();
+setInterval(tick, 2000);
+</script>
+</body>
+</html>
