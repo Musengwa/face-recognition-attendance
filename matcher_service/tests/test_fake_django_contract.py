@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.clients import DjangoClient
 from app.gallery import GalleryManager
 from app.outbox import Outbox
+from app.sinks import DjangoSink
 
 FAKE = Path(__file__).resolve().parents[2] / "tests" / "fake_django.py"
 TOKEN = "dt"
@@ -77,7 +78,7 @@ def test_attendance_statuses(django):
 
 def test_outbox_delivers_to_fake_and_keeps_captured_at(django, tmp_path):
     tc, client = django
-    box = Outbox(str(tmp_path / "o.sqlite3"), client.post_attendance)
+    box = Outbox(str(tmp_path / "o.sqlite3"), DjangoSink(client).deliver)
     box.put(ev("202400004", 5))
     assert box.deliver_due() == 1
     events = tc.get("/fake/attendance").json()["events"]

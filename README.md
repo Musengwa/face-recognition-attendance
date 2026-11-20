@@ -1,18 +1,20 @@
 # Face Recognition Attendance: recognition services
 
-Two independent services that run on two different machines and talk to the Django dashboard:
+Two independent services that run on two different machines. Attendance is written **straight to an Ethereum smart contract**; the Django dashboard is only used to download the registered faces:
 
 ```
  camera ──► matcher_service ──HTTP──► embedding_service      (stateless: image in, embeddings out)
+                  │ │
+                  │ └──JSON-RPC──► Ethereum node (Ganache) ──► Attendance contract   (markAttendance(memberId))
                   │
-                  └────────HTTP──► Django dashboard           (members, sessions, attendance, bans)
+                  └────HTTP──► Django dashboard               (gallery of members/embeddings, sessions, bans)
  Django admin registration camera ──HTTP──► embedding_service
 ```
 
 | Service | What it does | Keeps state? |
 |---|---|---|
 | [`embedding_service/`](embedding_service/) | FastAPI. Finds faces with YuNet, returns 128-d SFace embeddings and a quality verdict. | No. Images are processed in memory only. |
-| [`matcher_service/`](matcher_service/) | Worker. Reads a camera at `FPS`, gets embeddings, matches against the gallery downloaded from Django, votes over frames, reports to Django. | Only a local SQLite outbox of undelivered events. |
+| [`matcher_service/`](matcher_service/) | Worker. Reads a camera at `FPS`, gets embeddings, matches against the gallery downloaded from Django, votes over frames, writes attendance to the smart contract. | Only a local SQLite outbox of events not yet on chain. |
 
 The wire formats are in [API_CONTRACT.md](API_CONTRACT.md); hand that same file to the Django side. [AUDIT.md](AUDIT.md) describes the code this replaced (the legacy prototype in `open_CV/` is kept until the new setup has been run on the real hardware).
 
@@ -88,7 +90,7 @@ curl -H "Authorization: Token $TOKEN" -H "Content-Type: application/json" -d @ba
 cd matcher_service
 python -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env              # set CAMERA_SOURCE, EMBED_URL/TOKEN, DJANGO_URL/TOKEN
+cp .env.example .env              # set CAMERA_SOURCE, EMBED_URL/TOKEN, DJANGO_URL/TOKEN, CHAIN_* (section 3)
 export $(grep -v '^#' .env | xargs)
 python -m app
 curl localhost:8090/status
@@ -101,7 +103,15 @@ Or `docker compose up -d --build matcher` (the outbox lives in the `matcher-data
 | `CAMERA_SOURCE` | `0` | Camera index, RTSP/HTTP stream URL (e.g. IP Webcam `http://phone:8080/video`) or a video file (looped; handy for testing). |
 | `CAMERA_ID` | `camera-1` | Label sent to Django, e.g. `door-1`. |
 | `EMBED_URL`, `EMBED_API_TOKEN` | – (required) | Embedding service. |
-| `DJANGO_URL`, `DJANGO_API_TOKEN` | – (required) | Dashboard API. |
+| `DJANGO_URL`, `DJANGO_API_TOKEN` | – (required) | Dashboard API (gallery and sessions). |
+| `ATTENDANCE_SINK` | `chain` | `chain`: write attendance to the smart contract. `django`: old behaviour, `POST /api/attendance/`. |
+| `CHAIN_RPC_URL` | – (required for `chain`) | Ethereum JSON-RPC endpoint, e.g. the Ganache dev tunnel `https://33wj9spz-8545.inc1.devtunnels.ms/`. |
+| `CHAIN_CONTRACT_ADDRESS` | – | Address of the deployed `Attendance` contract. |
+| `CHAIN_DEPLOYED_FILE` | – | Alternative to the address: path to the `deployed.json` written by `deploy.py`. One of the two is required. |
+| `CHAIN_TUNNEL_TOKEN` | – | Only for a **private** Microsoft dev tunnel; sent as `X-Tunnel-Authorization: tunnel <token>`. |
+| `CHAIN_PRIVATE_KEY` | – | Sign transactions locally with this key (needed on any real network). Must be the contract owner's key. |
+| `CHAIN_FROM` | node's first account | Sender for unlocked-account nodes like Ganache, when no private key is set. |
+| `CHAIN_RECEIPT_TIMEOUT` | `60` | Seconds to wait for a transaction to be mined before retrying. |
 | `MATCH_THRESHOLD` | `0.363` | Minimum cosine similarity (SFace's published threshold). |
 | `MATCH_MARGIN` | `0.05` | Best person must beat the second-best person by this much. |
 | `FPS` | `4` | Frames analysed per second. |
@@ -110,20 +120,49 @@ Or `docker compose up -d --build matcher` (the outbox lives in the `matcher-data
 | `MEMBER_COOLDOWN_SECONDS` | `300` | Same member is not re-sent within this time. |
 | `IMPOSTER_COOLDOWN_SECONDS` | `20` | At most one imposter event per this time, per camera. |
 | `FRAME_WIDTH` | `640` | Frames are downscaled to this width before being sent. |
-| `OUTBOX_PATH` | `matcher_outbox.sqlite3` | Local queue for events Django has not acknowledged yet. |
-| `STATUS_HOST`, `STATUS_PORT` | `0.0.0.0`, `8090` | `GET /status`: camera/embedding/gallery health, outbox depth and counters (no identities). |
-| `HTTP_TIMEOUT` | `10` | Seconds, for both HTTP clients. |
+| `OUTBOX_PATH` | `matcher_outbox.sqlite3` | Local queue for events not yet written to the chain (or acknowledged by Django). |
+| `STATUS_HOST`, `STATUS_PORT` | `0.0.0.0`, `8090` | `GET /status`: camera/embedding/gallery health, delivery errors, outbox depth and counters (no identities). |
+| `HTTP_TIMEOUT` | `10` | Seconds, for the HTTP clients and each JSON-RPC request. |
 
 How it decides (details in [API_CONTRACT.md §2.4](API_CONTRACT.md)):
 1. Each good-quality face is compared with the **session gallery** (members of the running sessions + all banned members), then the **full gallery**; a match needs score ≥ threshold and a margin over the second-best person; otherwise it is an **imposter** (`member_id: null`). A face above the threshold but within the margin is ambiguous and is not reported.
 2. Faces are tracked by box overlap; an identity is reported after winning 3 of the last 5 frames of that face.
-3. Cooldowns (5 min per member, 20 s for imposters per camera), then the event goes into the SQLite outbox. A background thread delivers it to `POST /api/attendance/`, retrying with backoff (1 s … 60 s) while Django is down, keeping the original `captured_at`.
-4. If the embedding service is down, the loop backs off and keeps retrying; if Django is down at gallery refresh time, the last gallery stays in use. Until a gallery has been loaded at least once, nothing is reported.
-5. `app/hooks.py: on_recorded(record)` is called after Django answers `recorded`. It is a **no-op placeholder for the blockchain write**; nothing writes to a chain yet.
+3. Cooldowns (5 min per member, 20 s for imposters per camera). With the chain sink, **imposters and banned members are only logged** (and counted in `/status` as `not_written_imposter` / `not_written_banned`); the contract stores attendance only. Members go into the SQLite outbox.
+4. A background thread writes each queued member to the contract with `markAttendance(memberId)`, oldest first, retrying with backoff (1 s … 60 s) while the node is unreachable. See section 3.
+5. If the embedding service is down, the loop backs off and keeps retrying; if Django is down at gallery refresh time, the last gallery stays in use. Until a gallery has been loaded at least once, nothing is reported.
+6. `app/hooks.py: on_recorded(record)` is called after each successful write with the `tx_hash` and `block_number` (e.g. to tell the dashboard later). It is a no-op by default.
 
 ---
 
-## 3. Developing without Django: the fake dashboard
+## 3. Writing attendance to the blockchain
+
+The matcher writes to the `Attendance` contract from the sibling `blockchain attendance` project (`contracts/attendance.sol`):
+
+```solidity
+function markAttendance(string memory memberID) public onlyOwner   // appends (sender, memberID, block.timestamp)
+```
+
+Setup:
+
+1. Start Ganache and deploy the contract once: `cd "../blockchain attendance" && python deploy.py`. That writes `deployed.json`; put its `address` in `CHAIN_CONTRACT_ADDRESS`, or set `CHAIN_DEPLOYED_FILE` to the file. Redeploy (and update the address) whenever Ganache is restarted without a database, because the contract is gone.
+2. Set `CHAIN_RPC_URL`. Ganache is currently exposed through the dev tunnel `https://33wj9spz-8545.inc1.devtunnels.ms/`. The tunnel must let the matcher in: either make port 8545 **public** (VS Code Ports view → right-click → Port Visibility → Public, or `devtunnel access create <tunnel-id> -p 8545 --anonymous`), or keep it private and set `CHAIN_TUNNEL_TOKEN` to the output of `devtunnel token <tunnel-id> --scopes connect` (tokens expire, so renew them). Without either, the node answers `401 Unauthorized` and events wait in the outbox.
+3. Choose the sender. Only the contract **owner** (the deploying account) may write. On Ganache leave `CHAIN_PRIVATE_KEY` and `CHAIN_FROM` empty: the node's first unlocked account is used, the same one `deploy.py` used. On a real network set `CHAIN_PRIVATE_KEY` to the owner's key (keep it in `.env` only) and the transaction is signed inside the matcher.
+
+At startup the matcher logs `chain: {chain_id, contract, sender, owner, records}`, and logs an error if the sender is not the owner. If the node is unreachable it only warns and keeps running.
+
+Delivery guarantees:
+- Each event's tx hash is saved in the outbox **before** waiting for the receipt. After a timeout, crash or restart, the matcher looks that transaction up first instead of sending the member again. If the node dropped it, or it reverted, it is sent again.
+- Node down, tunnel `401`, a revert (e.g. the sender is not the owner) or a receipt timeout: the event stays pending and is retried with backoff. Nothing is dropped; `/status` shows `"delivery": {"sink": "chain", "error": ...}`.
+- The record's time on chain is `block.timestamp`, the time it was mined, not `captured_at`. Events replayed after an outage get the replay time. The contract has no field for the capture time, camera or confidence; storing those would need a new contract version.
+- Everything written to the chain is readable by anyone who can reach the node. Only opaque member ids are stored: no names, no embeddings.
+
+Read the records back with the sibling project: `python demo.py`, or `AttendanceChain(url=...).get_records()`.
+
+To go back to Django delivery, set `ATTENDANCE_SINK=django`; imposter and banned events are then sent to Django as before.
+
+---
+
+## 4. Developing without Django: the fake dashboard
 
 `tests/fake_django.py` implements the contract's Django endpoints in memory (persisted to `fake_django_state.json` so it survives restarts), plus test-only `/fake/*` helpers.
 
@@ -145,19 +184,20 @@ curl -H "Authorization: Token dev-django-token" -H "Content-Type: application/js
 curl -H "Authorization: Token dev-django-token" localhost:8001/fake/attendance
 ```
 
-## 4. Tests and lint
+## 5. Tests and lint
 
 ```bash
 pip install -r embedding_service/requirements-dev.txt -r matcher_service/requirements-dev.txt
 flake8                                   # repo root, max line length 140 (legacy open_CV/ excluded)
 (cd embedding_service && python get_models.py && pytest)   # uses the real models + tests/fixtures/face.jpg
-(cd matcher_service && pytest)                             # synthetic vectors, respx mocks, fake Django
+(cd matcher_service && pytest)                             # synthetic vectors, respx mocks, fake Django, in-memory EVM
 ```
 CI (`.github/workflows/ci.yml`) runs the same on pushes and PRs to `main` and `dev`.
 
-## 5. Security and privacy
+## 6. Security and privacy
 
 - **Put the services on a private network (VPN/VLAN) or behind HTTPS** (e.g. a reverse proxy with TLS in front of each service). Tokens and embeddings are otherwise sent in clear text. Biometric embeddings are personal data.
 - Images exist only in memory: the embedding service never writes or logs them; the matcher never saves frames. Only embeddings leave the embedding service; only member ids, scores and timestamps leave the matcher.
-- Tokens come from the environment only. Generate them with `python -c "import secrets; print(secrets.token_urlsafe(32))"`; nothing secret is committed (`.env` files are git-ignored; use the `.env.example` files).
+- The Ganache dev tunnel exposes a node with **unlocked, funded accounts**: anyone who can reach a public tunnel can write to the contract as the owner. Prefer a private tunnel with `CHAIN_TUNNEL_TOKEN`, and never expose a real network's node or key this way.
+- Tokens and the chain private key come from the environment only. Generate them with `python -c "import secrets; print(secrets.token_urlsafe(32))"`; nothing secret is committed (`.env` files are git-ignored; use the `.env.example` files).
 - Camera URLs with credentials are masked in the matcher's logs.

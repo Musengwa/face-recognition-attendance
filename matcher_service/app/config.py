@@ -18,6 +18,14 @@ class Settings:
     embed_token: str
     django_url: str
     django_token: str
+    attendance_sink: str = "chain"       # "chain" (Ethereum contract) or "django"
+    chain_rpc_url: str = ""
+    chain_contract_address: str = ""
+    chain_deployed_file: str = ""
+    chain_private_key: str = ""
+    chain_from: str = ""
+    chain_tunnel_token: str = ""
+    chain_receipt_timeout: float = 60.0
     match_threshold: float = 0.363
     match_margin: float = 0.05
     fps: float = 4.0
@@ -37,6 +45,11 @@ class Settings:
     @classmethod
     def from_env(cls):
         env = os.environ.get
+        sink = env("ATTENDANCE_SINK", "chain").strip().lower()
+        if sink not in ("chain", "django"):
+            raise RuntimeError("ATTENDANCE_SINK must be 'chain' or 'django'")
+        if sink == "chain" and not (env("CHAIN_CONTRACT_ADDRESS", "").strip() or env("CHAIN_DEPLOYED_FILE", "").strip()):
+            raise RuntimeError("ATTENDANCE_SINK=chain needs CHAIN_CONTRACT_ADDRESS or CHAIN_DEPLOYED_FILE")
         return cls(
             camera_source=env("CAMERA_SOURCE", "0"),
             camera_id=env("CAMERA_ID", "camera-1"),
@@ -44,6 +57,14 @@ class Settings:
             embed_token=_req("EMBED_API_TOKEN"),
             django_url=_req("DJANGO_URL").rstrip("/"),
             django_token=_req("DJANGO_API_TOKEN"),
+            attendance_sink=sink,
+            chain_rpc_url=_req("CHAIN_RPC_URL") if sink == "chain" else env("CHAIN_RPC_URL", ""),
+            chain_contract_address=env("CHAIN_CONTRACT_ADDRESS", "").strip(),
+            chain_deployed_file=env("CHAIN_DEPLOYED_FILE", "").strip(),
+            chain_private_key=env("CHAIN_PRIVATE_KEY", "").strip(),
+            chain_from=env("CHAIN_FROM", "").strip(),
+            chain_tunnel_token=env("CHAIN_TUNNEL_TOKEN", "").strip(),
+            chain_receipt_timeout=float(env("CHAIN_RECEIPT_TIMEOUT", 60)),
             match_threshold=float(env("MATCH_THRESHOLD", 0.363)),
             match_margin=float(env("MATCH_MARGIN", 0.05)),
             fps=float(env("FPS", 4)),

@@ -7,6 +7,7 @@ from conftest import captured
 from app import hooks
 from app.clients import DjangoClient
 from app.outbox import Outbox
+from app.sinks import DjangoSink
 from app.worker import Stats, on_delivered
 
 URL = "http://django.test/api/attendance/"
@@ -27,7 +28,7 @@ def event(i, member_id="A"):
 def make(tmp_path, stats=None):
     clock = Clock()
     stats = stats or Stats()
-    box = Outbox(str(tmp_path / "o.sqlite3"), DjangoClient("http://django.test", "dt").post_attendance,
+    box = Outbox(str(tmp_path / "o.sqlite3"), DjangoSink(DjangoClient("http://django.test", "dt")).deliver,
                  on_delivered=on_delivered(stats), clock=clock)
     return box, clock, stats
 

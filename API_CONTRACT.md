@@ -142,6 +142,8 @@ Sessions running right now. The matcher polls this often (every `SESSION_POLL_SE
 - Names and other personal data are not needed and should not be sent.
 
 ### 2.3 `POST /api/attendance/`
+> **Only used when the matcher runs with `ATTENDANCE_SINK=django`.** By default (`ATTENDANCE_SINK=chain`) the matcher writes attendance directly to the Ethereum `Attendance` contract (`markAttendance(memberId)`) and never calls this endpoint; imposters and banned members are then only logged by the matcher. Django can read attendance from the contract (`getRecordCount()` / `getRecord(i)`, or the `AttendanceMarked` event).
+
 One event per recognised person (or imposter).
 ```json
 {
