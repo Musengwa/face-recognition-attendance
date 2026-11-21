@@ -179,3 +179,16 @@ def test_embedding_service_down_raises_for_backoff(settings):
     with pytest.raises(httpx.HTTPError):
         w.process_frame(np.zeros((480, 640, 3), np.uint8), captured())
     assert w.stats.state["embed_ok"] is False
+
+
+def test_both_sink_sends_members_to_chain_and_imposters_banned_to_django(settings):
+    full = gallery(member("A", A), member("B", B), member("X", BANNED, banned=True))
+    session = gallery(member("A", A), member("X", BANNED, banned=True))
+    clock, chain_box, django_box = Clock(), ListOutbox(), ListOutbox()
+    w = Worker(with_(settings, attendance_sink="both"), None, StaticGalleries(session, full), chain_box,
+               clock=clock, django_outbox=django_box)
+    frames(w, clock, [face(toward(A, unit(9), 0.7), box=(0, 0, 100, 100)),
+                      face(unit(50), box=(300, 0, 100, 100)),
+                      face(toward(BANNED, unit(9), 0.8), box=(600, 0, 100, 100))], 3)
+    assert [e["member_id"] for e in chain_box.events] == ["A"]
+    assert sorted(e["member_id"] or "" for e in django_box.events) == ["", "X"]

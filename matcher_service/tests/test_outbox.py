@@ -149,3 +149,19 @@ def test_put_does_not_touch_network(tmp_path):
     box = Outbox(str(tmp_path / "o.sqlite3"), never)
     box.put(event(0))
     assert box.counts()["pending"] == 1
+
+
+@respx.mock
+def test_chain_records_are_forwarded_to_django_with_tx_hash(tmp_path):
+    route = respx.post(URL).mock(return_value=httpx.Response(201, json={"status": "recorded"}))
+    stats = Stats()
+    django_box = Outbox(str(tmp_path / "d.sqlite3"), DjangoSink(DjangoClient("http://django.test", "dt")).deliver)
+    chain_result = {"status": "recorded", "tx_hash": "0xabc", "block_number": 12}
+    chain_box = Outbox(str(tmp_path / "c.sqlite3"), lambda p, progress, cp: chain_result,
+                       on_delivered=on_delivered(stats, django_box))
+    chain_box.put(event(0))
+    assert chain_box.deliver_due() == 1
+    assert django_box.deliver_due() == 1
+    sent = json.loads(route.calls[0].request.content)
+    assert sent == {**event(0), "tx_hash": "0xabc", "block_number": 12}
+    assert stats.counters["recorded"] == 1

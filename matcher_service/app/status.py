@@ -27,18 +27,19 @@ def _connections(settings, galleries, snap, health):
     }
     embed["detail"] = {"url": settings.embed_url, **(embed.get("detail") or {})}
     out = {"embedder": embed, "django": django}
-    if settings.attendance_sink == "chain":
+    if settings.attendance_sink in ("chain", "both"):
         chain = probes.get("chain") or {"ok": None, "error": None, "detail": {}}
         chain["detail"] = {"rpc_url": settings.chain_rpc_url, **(chain.get("detail") or {})}
         out["chain"] = chain
     return out
 
 
-def build_status(settings, camera, galleries, outbox, stats, health=None):
+def build_status(settings, camera, galleries, outbox, stats, health=None, django_outbox=None):
     g = galleries.current
     snap = stats.snapshot()
     connections = _connections(settings, galleries, snap, health)
     healthy = bool(camera.connected and g is not None and not outbox.last_error
+                   and not (django_outbox is not None and django_outbox.last_error)
                    and all(c["ok"] is not False for c in connections.values())
                    and snap["embed_ok"] is not False)
     return {
@@ -55,6 +56,9 @@ def build_status(settings, camera, galleries, outbox, stats, health=None):
         "delivery": {"sink": settings.attendance_sink, "error": outbox.last_error,
                      "retry_backoff_seconds": outbox.backoff},
         "outbox": outbox.counts(),
+        **({} if django_outbox is None else {
+            "django_delivery": {"error": django_outbox.last_error, "retry_backoff_seconds": django_outbox.backoff},
+            "django_outbox": django_outbox.counts()}),
         "last_frame_at": snap["last_frame_at"],
         "counters": snap["counters"],
     }
