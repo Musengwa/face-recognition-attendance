@@ -17,6 +17,7 @@ log = logging.getLogger("matcher")
 
 
 def make_sink(s, django):
+    """The primary sink. With "both" it is the chain; Django gets a second outbox (see main)."""
     if s.attendance_sink == "django":
         return DjangoSink(django)
     from .chain import ChainSink, load_contract_address, make_web3     # web3 is only needed for the chain
@@ -48,11 +49,15 @@ def main():
     embed = EmbedClient(s.embed_url, s.embed_token, timeout=s.http_timeout)
     django = DjangoClient(s.django_url, s.django_token, timeout=s.http_timeout)
     sink = make_sink(s, django)
-    outbox = Outbox(s.outbox_path, sink.deliver, on_delivered=on_delivered(stats))
+    django_outbox = None
+    if s.attendance_sink == "both":
+        django_outbox = Outbox(s.django_outbox_path, DjangoSink(django).deliver,
+                               on_delivered=lambda payload, result: stats.inc("django_delivered"))
+    outbox = Outbox(s.outbox_path, sink.deliver, on_delivered=on_delivered(stats, django_outbox))
     galleries = GalleryManager(django, s.gallery_refresh_seconds, s.session_poll_seconds)
     camera = Camera(s.camera_source)
-    worker = Worker(s, embed, galleries, outbox, stats)
-    probes = [embed_probe(embed)] + ([chain_probe(sink)] if s.attendance_sink == "chain" else [])
+    worker = Worker(s, embed, galleries, outbox, stats, django_outbox=django_outbox)
+    probes = [embed_probe(embed)] + ([chain_probe(sink)] if s.attendance_sink in ("chain", "both") else [])
     health = HealthMonitor(probes)
 
     try:
@@ -63,9 +68,11 @@ def main():
 
     start_thread(galleries.run, stop, name="gallery")
     outbox_thread = start_thread(outbox.run, stop, name="outbox")
+    django_thread = start_thread(django_outbox.run, stop, name="outbox-django") if django_outbox else None
     start_thread(camera.run, stop, name="camera")
     start_thread(health.run, stop, name="health")
-    server = serve_status(s.status_host, s.status_port, lambda: build_status(s, camera, galleries, outbox, stats, health))
+    server = serve_status(s.status_host, s.status_port,
+                          lambda: build_status(s, camera, galleries, outbox, stats, health, django_outbox))
     log.info("matcher running: camera=%s fps=%s attendance -> %s; dashboard on http://localhost:%d/",
              s.camera_id, s.fps, sink.name, s.status_port)
 
@@ -77,6 +84,10 @@ def main():
         outbox_thread.join(timeout=s.http_timeout + 2)
         log.info("matcher stopped; outbox %s", outbox.counts())
         outbox.close()
+        if django_outbox:
+            django_thread.join(timeout=s.http_timeout + 2)
+            log.info("django outbox %s", django_outbox.counts())
+            django_outbox.close()
         embed.close()
         django.close()
 

@@ -37,7 +37,7 @@ class Settings:
     embed_token: str
     django_url: str
     django_token: str
-    attendance_sink: str = "chain"       # "chain" (Ethereum contract) or "django"
+    attendance_sink: str = "chain"       # "chain" (Ethereum contract), "django", or "both" (chain, then Django)
     chain_rpc_url: str = ""
     chain_contract_address: str = ""
     chain_deployed_file: str = ""
@@ -57,6 +57,7 @@ class Settings:
     frame_width: int = 640
     jpeg_quality: int = 85
     outbox_path: str = "matcher_outbox.sqlite3"
+    django_outbox_path: str = "matcher_outbox_django.sqlite3"     # only used with ATTENDANCE_SINK=both
     status_host: str = "0.0.0.0"
     status_port: int = 8090
     http_timeout: float = 10.0
@@ -65,10 +66,10 @@ class Settings:
     def from_env(cls):
         env = os.environ.get
         sink = env("ATTENDANCE_SINK", "chain").strip().lower()
-        if sink not in ("chain", "django"):
-            raise RuntimeError("ATTENDANCE_SINK must be 'chain' or 'django'")
-        if sink == "chain" and not (env("CHAIN_CONTRACT_ADDRESS", "").strip() or env("CHAIN_DEPLOYED_FILE", "").strip()):
-            raise RuntimeError("ATTENDANCE_SINK=chain needs CHAIN_CONTRACT_ADDRESS or CHAIN_DEPLOYED_FILE")
+        if sink not in ("chain", "django", "both"):
+            raise RuntimeError("ATTENDANCE_SINK must be 'chain', 'django' or 'both'")
+        if sink in ("chain", "both") and not (env("CHAIN_CONTRACT_ADDRESS", "").strip() or env("CHAIN_DEPLOYED_FILE", "").strip()):
+            raise RuntimeError(f"ATTENDANCE_SINK={sink} needs CHAIN_CONTRACT_ADDRESS or CHAIN_DEPLOYED_FILE")
         return cls(
             camera_source=env("CAMERA_SOURCE", "0"),
             camera_id=env("CAMERA_ID", "camera-1"),
@@ -77,7 +78,7 @@ class Settings:
             django_url=_req("DJANGO_URL").rstrip("/"),
             django_token=_req("DJANGO_API_TOKEN"),
             attendance_sink=sink,
-            chain_rpc_url=_req("CHAIN_RPC_URL") if sink == "chain" else env("CHAIN_RPC_URL", ""),
+            chain_rpc_url=_req("CHAIN_RPC_URL") if sink in ("chain", "both") else env("CHAIN_RPC_URL", ""),
             chain_contract_address=env("CHAIN_CONTRACT_ADDRESS", "").strip(),
             chain_deployed_file=env("CHAIN_DEPLOYED_FILE", "").strip(),
             chain_private_key=env("CHAIN_PRIVATE_KEY", "").strip(),
@@ -93,6 +94,7 @@ class Settings:
             imposter_cooldown_seconds=float(env("IMPOSTER_COOLDOWN_SECONDS", 20)),
             frame_width=int(env("FRAME_WIDTH", 640)),
             outbox_path=env("OUTBOX_PATH", "matcher_outbox.sqlite3"),
+            django_outbox_path=env("DJANGO_OUTBOX_PATH", "matcher_outbox_django.sqlite3"),
             status_host=env("STATUS_HOST", "0.0.0.0"),
             status_port=int(env("STATUS_PORT", 8090)),
             http_timeout=float(env("HTTP_TIMEOUT", 10)),

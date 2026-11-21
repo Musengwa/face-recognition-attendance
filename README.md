@@ -104,7 +104,8 @@ Or `docker compose up -d --build matcher` (the outbox lives in the `matcher-data
 | `CAMERA_ID` | `camera-1` | Label sent to Django, e.g. `door-1`. |
 | `EMBED_URL`, `EMBED_API_TOKEN` | – (required) | Embedding service. |
 | `DJANGO_URL`, `DJANGO_API_TOKEN` | – (required) | Dashboard API (gallery and sessions). |
-| `ATTENDANCE_SINK` | `chain` | `chain`: write attendance to the smart contract. `django`: old behaviour, `POST /api/attendance/`. |
+| `ATTENDANCE_SINK` | `chain` | `chain`: write attendance to the smart contract only (Django is **not** told). `django`: old behaviour, `POST /api/attendance/` only. `both`: write to the contract, then `POST /api/attendance/` with the real `tx_hash`/`block_number`; imposters and banned members, which the contract cannot store, go to Django directly. |
+| `DJANGO_OUTBOX_PATH` | `matcher_outbox_django.sqlite3` | With `both`: separate outbox for the Django copies, so a Django outage never re-sends a chain transaction. |
 | `CHAIN_RPC_URL` | – (required for `chain`) | Ethereum JSON-RPC endpoint, e.g. the Ganache dev tunnel `https://33wj9spz-8545.inc1.devtunnels.ms/`. |
 | `CHAIN_CONTRACT_ADDRESS` | – | Address of the deployed `Attendance` contract. |
 | `CHAIN_DEPLOYED_FILE` | – | Alternative to the address: path to the `deployed.json` written by `deploy.py`. One of the two is required. |

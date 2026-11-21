@@ -85,11 +85,13 @@ class Outbox:
                                      (str(exc)[:300], event_id))
                 log.error("event %s rejected (%s); kept as dead in outbox", payload.get("event_id"), exc)
                 continue
+            # Notify before deleting: a crash in between re-delivers the event (the chain sink resumes from the
+            # checkpointed tx, Django dedupes on event_id) instead of silently skipping the callback.
+            self._notify(payload, result)
             with self._lock:
                 self._db.execute("DELETE FROM events WHERE id=?", (event_id,))
             self.backoff, self.last_error = 0.0, None
             delivered += 1
-            self._notify(payload, result)
 
     def _checkpoint(self, event_id, value):
         """Persist sink progress (the chain tx hash) before waiting for the outcome."""

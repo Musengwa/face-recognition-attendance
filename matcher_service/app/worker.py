@@ -22,7 +22,7 @@ class Stats:
             "frames", "embed_errors", "faces", "faces_low_quality", "votes_member", "votes_imposter",
             "votes_ambiguous", "reported_member", "reported_imposter", "suppressed_cooldown",
             "skipped_no_gallery", "skipped_model_mismatch", "not_written_imposter", "not_written_banned",
-            "delivered", "recorded")}
+            "delivered", "recorded", "django_delivered")}
         self.state = {"embed_ok": None, "model_mismatch": None, "last_frame_at": None}
 
     def inc(self, key, n=1):
@@ -46,8 +46,11 @@ def resize_to_width(frame, width):
 
 
 class Worker:
-    def __init__(self, settings, embed, galleries, outbox, stats=None, clock=time.monotonic):
+    def __init__(self, settings, embed, galleries, outbox, stats=None, clock=time.monotonic, django_outbox=None):
+        """django_outbox: with ATTENDANCE_SINK=both, imposter/banned events (which the contract cannot store)
+        go straight to Django through it; member events reach Django after their chain write."""
         self.s = settings
+        self.django_outbox = django_outbox
         self.embed = embed
         self.galleries = galleries          # GalleryManager
         self.outbox = outbox
@@ -107,8 +110,11 @@ class Worker:
         return events
 
     def _report(self, win, captured_at, now):
+        target = self.outbox
         if self.s.attendance_sink == "chain" and not self._chain_writable(win.label, now):
             return None
+        if self.s.attendance_sink == "both" and self._not_for_chain(win.label):
+            target = self.django_outbox
         if win.label == IMPOSTER:
             key, seconds, member_id = ("imposter", self.s.camera_id), self.s.imposter_cooldown_seconds, None
         else:
@@ -125,10 +131,14 @@ class Worker:
             "block_number": None,
             "event_id": str(uuid.uuid4()),
         }
-        self.outbox.put(event)
+        target.put(event)
         self.stats.inc("reported_imposter" if member_id is None else "reported_member")
         log.info("queued %s (confidence %.3f) at %s", member_id or "IMPOSTER", event["confidence"], event["captured_at"])
         return event
+
+    def _not_for_chain(self, label):
+        g = self.galleries.current
+        return label == IMPOSTER or (g is not None and label in g.full.banned)
 
     def _chain_writable(self, label, now):
         """The contract only stores attendance: imposters and banned members are logged, never written."""
@@ -167,13 +177,16 @@ class Worker:
             stop.wait(max(0.0, period - (time.monotonic() - started)))
 
 
-def on_delivered(stats):
-    """Build the outbox callback: count deliveries and fire the hook for `recorded` results."""
+def on_delivered(stats, django_outbox=None):
+    """Build the outbox callback: count deliveries and fire the hook for `recorded` results.
+    With django_outbox (ATTENDANCE_SINK=both) each chain record is forwarded to Django with its tx hash."""
     def callback(payload, result):
         stats.inc("delivered")
         if isinstance(result, dict) and result.get("status") == "recorded":
             stats.inc("recorded")
             if result.get("tx_hash"):
                 log.info("on chain: %s tx=%s block=%s", payload.get("member_id"), result["tx_hash"], result.get("block_number"))
+                if django_outbox is not None:
+                    django_outbox.put({**payload, "tx_hash": result["tx_hash"], "block_number": result.get("block_number")})
             hooks.on_recorded({"event": payload, "response": result})
     return callback
